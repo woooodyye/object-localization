@@ -19,6 +19,7 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 import wandb
 import seaborn
+import matplotlib as plt
 
 from AlexNet import localizer_alexnet, localizer_alexnet_robust
 from voc_dataset import *
@@ -149,7 +150,7 @@ def main():
     global args, best_prec1
     args = parser.parse_args()
     args.distributed = args.world_size > 1
-
+    print(args)
     # create model
     print("=> creating model '{}'".format(args.arch))
     if args.arch == 'localizer_alexnet':
@@ -163,7 +164,8 @@ def main():
 
     # also use an LR scheduler to decay LR by 10 every 30 epochs
     criterion = nn.BCELoss() #using binary cross entropy loss function
-    optimizer = torch.optim.SGD(model.parameters(), lr = 0.1, momentum = 0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr = args.lr, momentum = args.momentum)
+    torch.optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1)
     #using stochastic gradient descent with lr = 0.01 and moementum of 0.9 
     # as indicated in the paper
 
@@ -214,11 +216,9 @@ def main():
         validate(val_loader, model, criterion)
         return
 
-    # TODO (Q1.3): Create loggers for wandb.
-    # Ideally, use flags since wandb makes it harder to debug code.
-    wandb.init(project="vlr-hw1")
+    wandb.init(project="vlr-hw1.62")
 
-
+    random_indices = torch.randint(0, args.batch_size, (3,))
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch)
@@ -238,6 +238,10 @@ def main():
                 'best_prec1': best_prec1,
                 'optimizer': optimizer.state_dict(),
             }, is_best)
+
+    image_array = visualize_location(val_loader, model, args.epochs, random_indices)
+    wandb.log({"image and colomap at end of training ": image_array})
+
 
 
 # TODO: You can add input arguments if you wish
@@ -278,12 +282,12 @@ def train(train_loader, model, criterion, optimizer, epoch):
         loss = criterion(imoutput, labels)
 
         # measure metrics and record loss
-        m1 = metric1(imoutput.data, target)
-        m2 = metric2(imoutput.data, target)
+        m1 = metric1(imoutput.data, labels.data)
+        m2 = metric2(imoutput.data, labels.data)
         losses.update(loss.item(), target.size(0))
         losses.update(loss.item())
-        # avg_m1.update(m1)
-        # avg_m2.update(m2)
+        avg_m1.update(m1)
+        avg_m2.update(m2)
 
         # TODO (Q1.1): compute gradient and perform optimizer step
         #zero my gradient
@@ -317,7 +321,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         # TODO (Q1.3): Visualize/log things as mentioned in handout at appropriate intervals
         # logging the loss
-        wandb.log({'epoch': epoch, 'loss': loss})
+        wandb.log({'epoch': epoch, 'loss': loss, 'm1' : m1, 'm2' : m2})
         # End of train()
 
 
@@ -352,11 +356,11 @@ def validate(val_loader, model, criterion, epoch=0):
         loss = criterion(imoutput, labels)
 
         # measure metrics and record loss
-        m1 = metric1(imoutput.data, target)
-        m2 = metric2(imoutput.data, target)
+        m1 = metric1(imoutput.data, labels.data)
+        m2 = metric2(imoutput.data, labels.data)
         losses.update(loss.item(), target.size(0))
-        # avg_m1.update(m1)
-        # avg_m2.update(m2)
+        avg_m1.update(m1)
+        avg_m2.update(m2)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -377,7 +381,15 @@ def validate(val_loader, model, criterion, epoch=0):
 
         # TODO (Q1.3): Visualize things as mentioned in handout
         # TODO (Q1.3): Visualize at appropriate interval
-    visualize_location(val_loader, model, epoch)
+    if(epoch % 2 ==0):
+        print('tring to plot heatmap at epoch', epoch)
+        image_array = visualize_location(val_loader, model, epoch)
+        wandb.log({"epoch": epoch, "image and colomap at end of training ": image_array})
+
+
+    if(epoch % 2 == 0):
+        wandb.log({'epoch': epoch, 'avg_m1' : avg_m1.val, 'avg_m2' : avg_m2.val})
+
 
     print(' * Metric1 {avg_m1.avg:.3f} Metric2 {avg_m2.avg:.3f}'.format(
         avg_m1=avg_m1, avg_m2=avg_m2))
@@ -389,54 +401,37 @@ def min_max(x):
     min_v = torch.min(x)
     return (x - max_v) / (max_v - min_v)
 
-def visualize_location(val_loader, model, epoch):
+def visualize_location(val_loader, model, epoch, indices = [11,12]):
     for i, (data) in enumerate(val_loader):
-        idx1 = 0
-        idx2 = 1
-        target = data[0].cuda()
-        labels = data[1].cuda()
-        gt_classes = data[2].cuda()
+        target = data[0].data
+        labels = data[1].data
+        gt_classes = data[2].data
 
         imoutput = model(target)
 
         imoutput_resized = F.interpolate(imoutput, size =[512, 512], mode = 'bilinear')
 
-        #get image colormap for visualization
-        class1 = gt_classes[idx1][0]
-        class2 = gt_classes[idx2][0]
+        image_array = []
+        for idx in indices:
+            #get image colormap for visualization
+            class_idx = gt_classes[idx][0]
 
-        print(class1)
-        print(class2)
+            map_idx = imoutput_resized[idx, class_idx]
 
-        map1 = imoutput_resized[idx1, class1]
-        map2 = imoutput_resized[idx2, class2]
+            map_norm = min_max(map_idx)
 
-        map1_norm = min_max(map1)
-        map2_norm = min_max(map2)
+            map_np = map_norm.cpu().detach().numpy()
 
+            colormap = seaborn.heatmap(map_np, cmap = 'jet_r', cbar = False, xticklabels=False, yticklabels=False)
 
-        map1_np = map1_norm.cpu().detach().numpy()
-        map2_np = map2_norm.cpu().detach().numpy()
+            image = torch.squeeze(target[idx])
 
-        print(map1_np)
-        print(map2_np)
-
-        colormap1 = seaborn.heatmap(map1_np, cmap = 'jet', cbar = False, xticklabels=False, yticklabels=False)
-        colormap2 = seaborn.heatmap(map2_np, cmap = 'jet', cbar = False,
-        xticklabels=False, yticklabels=False)
-
-        image1 = torch.squeeze(target[idx1])
-        image2 = torch.squeeze(target[idx2])
-
-        img1 = wandb.Image(image1)
-        cmap1 = wandb.Image(colormap1)
-        img2 = wandb.Image(image2)
-        cmap2 = wandb.Image(colormap2)
-
-        wandb.log({"image to colormap comparison number ": [img1, cmap1, img2, cmap2]})
-
+            img = wandb.Image(image)
+            cmap = wandb.Image(colormap)
+            image_array.append(img)
+            image_array.append(cmap)
         break;
-
+    return image_array
 
 # TODO: You can make changes to this function if you wish (not necessary)
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -465,15 +460,32 @@ class AverageMeter(object):
 
 
 def metric1(output, target):
-    # TODO (Q1.5): compute metric1
 
-    return [0]
+    #output 32 x 20 tensor
+
+    #target 32 x 20 tensor 
+    maP = 0.0
+    n = output.size(1)
+    for i in range(n):
+        #each should be 32x1 
+        pred_i = output[:,i].cpu().numpy()
+        gt_i = target[:,i].cpu().numpy()
+        if max(gt_i) == 0:
+            #no corresponding class label in this batch
+            continue;
+        average_precision = sklearn.metrics.average_precision_score(gt_i, pred_i, average = 'samples')
+        maP += average_precision
+
+    return maP / n
 
 
 def metric2(output, target):
-    # TODO (Q1.5): compute metric2
+    threshold = 0.5
+    pred = torch.where(output > threshold, 1, 0).cpu().numpy()
+    gt = target.cpu().numpy()
+    recall = sklearn.metrics.recall_score(gt, pred, average = 'samples')
+    return recall
 
-    return [0]
 
 
 if __name__ == '__main__':
