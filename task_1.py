@@ -18,6 +18,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 import wandb
+import seaborn
 
 from AlexNet import localizer_alexnet, localizer_alexnet_robust
 from voc_dataset import *
@@ -125,24 +126,23 @@ def collate_batch(batch):
     #     ret['rois'] = proposals
     #     ret['gt_boxes'] = gt_boxes
     #     ret['gt_classes'] = gt_class_list
-    # maxBoxes = 0;
-    # for ret in batch:
-    #     numBoxes = len(ret['gt_classes'])
-    #     if numBoxes >= maxBoxes:
-    #         maxBoxes = numBoxes
-    # for ret in batch:
-    #     numBoxes = len(ret['gt_classes'])
-    #     diff = maxBoxes- numBoxes
-    #     for i in range(diff):
-    #         ret['gt_classes'].append(0)
-    #         ret['gt_boxes'].append([0,0,0,0])
-    # return batch
+    maxBoxes = 0;
+    for ret in batch:
+        numBoxes = len(ret['gt_classes'])
+        if numBoxes >= maxBoxes:
+            maxBoxes = numBoxes
+    for ret in batch:
+        numBoxes = len(ret['gt_classes'])
+        diff = maxBoxes- numBoxes
+        for i in range(diff):
+            ret['gt_classes'].append(0)
+            ret['gt_boxes'].append([0,0,0,0])
     return [
         torch.stack([b['image'] for b in batch]),
         torch.stack([b['label'] for b in batch]),
         # torch.stack([b['wgt'] for b in batch]),
         # torch.stack([b['gt_boxes'] for b in batch]),
-        # torch.stack([b['gt_classes'] for b in batch]),
+        torch.stack([torch.tensor(b['gt_classes']) for b in batch]),
         ]
 
 def main():
@@ -163,7 +163,7 @@ def main():
 
     # also use an LR scheduler to decay LR by 10 every 30 epochs
     criterion = nn.BCELoss() #using binary cross entropy loss function
-    optimizer = torch.optim.SGD(model.parameters(), lr = 0.01, momentum = 0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr = 0.1, momentum = 0.9)
     #using stochastic gradient descent with lr = 0.01 and moementum of 0.9 
     # as indicated in the paper
 
@@ -216,6 +216,7 @@ def main():
 
     # TODO (Q1.3): Create loggers for wandb.
     # Ideally, use flags since wandb makes it harder to debug code.
+    wandb.init(project="vlr-hw1")
 
 
     for epoch in range(args.start_epoch, args.epochs):
@@ -279,7 +280,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         # measure metrics and record loss
         m1 = metric1(imoutput.data, target)
         m2 = metric2(imoutput.data, target)
-        # losses.update(loss.item(), input.size(0))
+        losses.update(loss.item(), target.size(0))
         losses.update(loss.item())
         # avg_m1.update(m1)
         # avg_m2.update(m2)
@@ -315,7 +316,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
                       avg_m2=avg_m2))
 
         # TODO (Q1.3): Visualize/log things as mentioned in handout at appropriate intervals
-
+        # logging the loss
+        wandb.log({'epoch': epoch, 'loss': loss})
         # End of train()
 
 
@@ -324,6 +326,7 @@ def validate(val_loader, model, criterion, epoch=0):
     losses = AverageMeter()
     avg_m1 = AverageMeter()
     avg_m2 = AverageMeter()
+
 
     # switch to evaluate mode
     model.eval()
@@ -337,7 +340,7 @@ def validate(val_loader, model, criterion, epoch=0):
         labels = data[1].cuda()
 
         # TODO (Q1.1): Get output from model
-        imoutput = model(target)
+        imoutput = model(target)    
 
         # TODO (Q1.1): Perform any necessary functions on the output
         imoutput = F.max_pool2d(imoutput, kernel_size=imoutput.size()[2:])
@@ -351,7 +354,7 @@ def validate(val_loader, model, criterion, epoch=0):
         # measure metrics and record loss
         m1 = metric1(imoutput.data, target)
         m2 = metric2(imoutput.data, target)
-        # losses.update(loss.item(), input.size(0))
+        losses.update(loss.item(), target.size(0))
         # avg_m1.update(m1)
         # avg_m2.update(m2)
 
@@ -373,13 +376,66 @@ def validate(val_loader, model, criterion, epoch=0):
                       avg_m2=avg_m2))
 
         # TODO (Q1.3): Visualize things as mentioned in handout
-        # TODO (Q1.3): Visualize at appropriate intervals
-
+        # TODO (Q1.3): Visualize at appropriate interval
+    visualize_location(val_loader, model, epoch)
 
     print(' * Metric1 {avg_m1.avg:.3f} Metric2 {avg_m2.avg:.3f}'.format(
         avg_m1=avg_m1, avg_m2=avg_m2))
 
     return avg_m1.avg, avg_m2.avg
+
+def min_max(x):
+    max_v = torch.max(x)
+    min_v = torch.min(x)
+    return (x - max_v) / (max_v - min_v)
+
+def visualize_location(val_loader, model, epoch):
+    for i, (data) in enumerate(val_loader):
+        idx1 = 0
+        idx2 = 1
+        target = data[0].cuda()
+        labels = data[1].cuda()
+        gt_classes = data[2].cuda()
+
+        imoutput = model(target)
+
+        imoutput_resized = F.interpolate(imoutput, size =[512, 512], mode = 'bilinear')
+
+        #get image colormap for visualization
+        class1 = gt_classes[idx1][0]
+        class2 = gt_classes[idx2][0]
+
+        print(class1)
+        print(class2)
+
+        map1 = imoutput_resized[idx1, class1]
+        map2 = imoutput_resized[idx2, class2]
+
+        map1_norm = min_max(map1)
+        map2_norm = min_max(map2)
+
+
+        map1_np = map1_norm.cpu().detach().numpy()
+        map2_np = map2_norm.cpu().detach().numpy()
+
+        print(map1_np)
+        print(map2_np)
+
+        colormap1 = seaborn.heatmap(map1_np, cmap = 'jet', cbar = False, xticklabels=False, yticklabels=False)
+        colormap2 = seaborn.heatmap(map2_np, cmap = 'jet', cbar = False,
+        xticklabels=False, yticklabels=False)
+
+        image1 = torch.squeeze(target[idx1])
+        image2 = torch.squeeze(target[idx2])
+
+        img1 = wandb.Image(image1)
+        cmap1 = wandb.Image(colormap1)
+        img2 = wandb.Image(image2)
+        cmap2 = wandb.Image(colormap2)
+
+        wandb.log({"image to colormap comparison number ": [img1, cmap1, img2, cmap2]})
+
+        break;
 
 
 # TODO: You can make changes to this function if you wish (not necessary)
