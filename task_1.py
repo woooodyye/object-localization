@@ -216,7 +216,7 @@ def main():
         validate(val_loader, model, criterion)
         return
 
-    wandb.init(project="vlr-hw1.62")
+    wandb.init(project="vlr-hw1.6-lr-0.1-jet")
 
     random_indices = torch.randint(0, args.batch_size, (3,))
     for epoch in range(args.start_epoch, args.epochs):
@@ -399,7 +399,7 @@ def validate(val_loader, model, criterion, epoch=0):
 def min_max(x):
     max_v = torch.max(x)
     min_v = torch.min(x)
-    return (x - max_v) / (max_v - min_v)
+    return (x - min_v) / (max_v - min_v)
 
 def visualize_location(val_loader, model, epoch, indices = [11,12]):
     for i, (data) in enumerate(val_loader):
@@ -422,7 +422,7 @@ def visualize_location(val_loader, model, epoch, indices = [11,12]):
 
             map_np = map_norm.cpu().detach().numpy()
 
-            colormap = seaborn.heatmap(map_np, cmap = 'jet_r', cbar = False, xticklabels=False, yticklabels=False)
+            colormap = seaborn.heatmap(map_np, cmap = 'jet', cbar = False, xticklabels=False, yticklabels=False)
 
             image = torch.squeeze(target[idx])
 

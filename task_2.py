@@ -15,7 +15,7 @@ import pickle as pkl
 from wsddn import WSDDN
 from voc_dataset import *
 import wandb
-from utils import nms, tensor_to_PIL
+from utils import nms, tensor_to_PIL, iou
 from PIL import Image, ImageDraw
 
 
@@ -94,9 +94,26 @@ def calculate_map():
     """
     Calculate the mAP for classification.
     """
-    # TODO (Q2.3): Calculate mAP on test set.
-    # Feel free to write necessary function parameters.
-    pass
+    FP = 0
+    TP = 0
+    threshold = 0.5
+    for class_i in classes:
+        for pred_bbox in bboxes:
+            #if no gt_box:
+            if len(gt_bbox) == 0:
+                FP += 1
+            # there is gt_box
+            else:
+                if (mask_gt[index])
+                #valid gt box
+                    iou_val = iou(gt_bbox, pred_bbox)
+                    if iou_val >= threshold:
+                        TP +=1
+                        mask_gt[index] = 0
+                    else:
+                        FP +=1
+
+    
 
 
 def test_model(model, val_loader=None, thresh=0.05):
@@ -151,6 +168,7 @@ def train_model(model, train_loader=None, val_loader=None, optimizer=None, args=
             # TODO (Q2.2): perform forward pass
             # take care that proposal values should be in pixels
             # Convert inputs to cuda if training on GPU
+            imoutput = model(image, rois, target) 
 
 
             # backward pass and update
@@ -183,8 +201,8 @@ def main():
     args = parser.parse_args()
     # TODO (Q2.2): Load datasets and create dataloaders
     # Initialize wandb logger
-    train_dataset = None
-    val_dataset = None
+    train_dataset = VOCDataset(split = 'trainval', image_size= 512)
+    val_dataset =VOCDataset(split = 'test', image_size= 512)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -234,10 +252,18 @@ def main():
     net.cuda()
     net.train()
 
-    # TODO (Q2.2): Freeze AlexNet layers since we are loading a pretrained model
+    #Free AlexNetlayers
+    for feature in net.features:
+        feature.requires_grad = False
 
-    # TODO (Q2.2): Create optimizer only for network parameters that are trainable
-    optimizer = None
+    #Create optimizer only for network parameters that are trainable
+    params = list(net.parameters())
+    print(params)
+    optimizer = torch.optim.SGD(params[2:], lr=args.lr, 
+                            momentum=args.momentum)
+    torch.optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1)
+
+
 
     # Training
     train_model(net, train_loader, optimizer, args)
