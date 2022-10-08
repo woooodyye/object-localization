@@ -10,12 +10,13 @@ from torch.nn.parameter import Parameter
 import numpy as np
 from datetime import datetime
 import pickle as pkl
+import time
 
 # imports
 from wsddn import WSDDN
 from voc_dataset import *
 import wandb
-from utils import nms, tensor_to_PIL, iou
+from utils import nms, tensor_to_PIL, iou, get_box_data
 from PIL import Image, ImageDraw
 
 
@@ -25,56 +26,47 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument(
     '--lr',
     default=0.0001,
-    type=float,
-    description='Learning rate'
+    type=float
 )
 parser.add_argument(
     '--lr-decay-steps',
     default=150000,
-    type=int,
-    description='Interval at which the lr is decayed'
+    type=int
 )
 parser.add_argument(
     '--lr-decay',
     default=0.1,
-    type=float,
-    description='Decay rate of lr'
+    type=float
 )
 parser.add_argument(
     '--momentum',
     default=0.9,
-    type=float,
-    description='Momentum of optimizer'
+    type=float
 )
 parser.add_argument(
     '--weight-decay',
     default=0.0005,
-    type=float,
-    description='Weight decay'
+    type=float
 )
 parser.add_argument(
     '--epochs',
     default=5,
-    type=int,
-    description='Number of epochs'
+    type=int
 )
 parser.add_argument(
     '--val-interval',
-    default=5000,
-    type=int,
-    description='Interval at which to perform validation'
+    default=500,
+    type=int
 )
 parser.add_argument(
     '--disp-interval',
     default=10,
-    type=int,
-    description='Interval at which to perform visualization'
+    type=int
 )
 parser.add_argument(
     '--use-wandb',
     default=False,
-    type=bool,
-    description='Flag to enable visualization'
+    type=bool
 )
 # ------------
 
@@ -90,6 +82,7 @@ if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
 
+#unfinisehd implementation of maP
 def calculate_map():
     """
     Calculate the mAP for classification.
@@ -104,7 +97,7 @@ def calculate_map():
                 FP += 1
             # there is gt_box
             else:
-                if (mask_gt[index])
+                if (mask_gt[index]):
                 #valid gt box
                     iou_val = iou(gt_bbox, pred_bbox)
                     if iou_val >= threshold:
@@ -121,59 +114,64 @@ def test_model(model, val_loader=None, thresh=0.05):
     Tests the networks and visualizes the detections
     :param thresh: Confidence threshold
     """
+    
     with torch.no_grad():
+        
         for iter, data in enumerate(val_loader):
 
             # one batch = data for one image
-            image = data['image']
-            target = data['label']
+            #need to send it to cuda 
+            image = data['image'].cuda()
+            target = data['label'].cuda()
             wgt = data['wgt']
             rois = data['rois']
             gt_boxes = data['gt_boxes']
             gt_class_list = data['gt_classes']
-
-            # TODO (Q2.3): perform forward pass, compute cls_probs
-
-
-            # TODO (Q2.3): Iterate over each class (follow comments)
-            for class_num in range(20):
-                # get valid rois and cls_scores based on thresh
-
-                # use NMS to get boxes and scores
-                pass
-
-            # TODO (Q2.3): visualize bounding box predictions when required
-            calculate_map()
+            
+            rois_bboxes =  torch.squeeze(torch.stack(rois['top_boxes'])).cuda()
+            cls_probs = model(image, rois, target) 
+            
+        # calculate_map()
 
 
-def train_model(model, train_loader=None, val_loader=None, optimizer=None, args=None):
+def train_model(model, train_loader=None, val_loader = None, optimizer=None, args=None, class_id_to_label= None):
     """
     Trains the network, runs evaluation and visualizes the detections
     """
     # Initialize training variables
     train_loss = 0
     step_cnt = 0
+
+    losses = AverageMeter()
+
     for epoch in range(args.epochs):
         for iter, data in enumerate(train_loader):
 
             # TODO (Q2.2): get one batch and perform forward pass
             # one batch = data for one image
-            image = data['image']
-            target = data['label']
+            image = data['image'].cuda()
+            target = data['label'].cuda()
             wgt = data['wgt']
             rois = data['rois']
             gt_boxes = data['gt_boxes']
             gt_class_list = data['gt_classes']
+            
+            rois_bboxes =  torch.squeeze(torch.stack(rois['top_boxes'])).cuda()
 
             # TODO (Q2.2): perform forward pass
             # take care that proposal values should be in pixels
             # Convert inputs to cuda if training on GPU
-            imoutput = model(image, rois, target) 
+            cls_probs = model(image, rois_bboxes, target) 
+
+            #randomly sample first 10 images to get labeled
+            if(iter < 10):
+                visualize_bbox(cls_probs, rois_bboxes, image, class_id_to_label)
 
 
             # backward pass and update
             loss = model.loss
             train_loss += loss.item()
+            losses.update(loss.item())
             step_cnt += 1
 
             optimizer.zero_grad()
@@ -182,16 +180,26 @@ def train_model(model, train_loader=None, val_loader=None, optimizer=None, args=
 
             # TODO (Q2.2): evaluate the model every N iterations (N defined in handout)
             # Add wandb logging wherever necessary
+
             if iter % args.val_interval == 0 and iter != 0:
-                model.eval()
-                ap = test_model(model, val_loader)
-                print("AP ", ap)
-                model.train()
+                # model.eval()
+                # ap = test_model(model, val_loader)
+                # print("AP ", ap)
+                # model.train()
+                wandb.log({'average loss': losses.val})
+            
 
-            # TODO (Q2.4): Perform all visualizations here
-            # The intervals for different things are defined in the handout
+            if iter % args.disp_interval == 0:
+                print('Epoch: [{0}][{1}/{2}]\t'
+                    'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
+                        epoch,
+                        iter,
+                        len(train_loader),
+                        loss=losses))
 
-    # TODO (Q2.4): Plot class-wise APs
+            wandb.log({'loss': loss})
+        
+    
 
 
 def main():
@@ -199,10 +207,12 @@ def main():
     Creates dataloaders, network, and calls the trainer
     """
     args = parser.parse_args()
-    # TODO (Q2.2): Load datasets and create dataloaders
-    # Initialize wandb logger
+    print(args)
+
+    #load dataset
     train_dataset = VOCDataset(split = 'trainval', image_size= 512)
     val_dataset =VOCDataset(split = 'test', image_size= 512)
+    class_id_to_label = dict(enumerate(train_dataset.CLASS_NAMES))
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -220,7 +230,6 @@ def main():
         num_workers=4,
         pin_memory=True,
         drop_last=True)
-
     # Create network and initialize
     net = WSDDN(classes=train_dataset.CLASS_NAMES)
     print(net)
@@ -252,18 +261,72 @@ def main():
     net.cuda()
     net.train()
 
-    #Free AlexNetlayers
+    #Free AlexNetlayers #also need to preload alexnet
     for feature in net.features:
         feature.requires_grad = False
 
     #Create optimizer only for network parameters that are trainable
     params = list(net.parameters())
-    print(params)
-    optimizer = torch.optim.SGD(params[2:], lr=args.lr, 
+    
+    optimizer = torch.optim.SGD(params[12:], lr=args.lr, 
                             momentum=args.momentum)
-    torch.optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1)
 
-
+    #init wandb
+    wandb.init(project="vlr-hw1-q2.5-test")
 
     # Training
-    train_model(net, train_loader, optimizer, args)
+    train_model(net, train_loader, val_loader, optimizer, args, class_id_to_label)
+
+
+def save_checkpoint(state, is_best, filename='task2_checkpoint.pth.tar'):
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, 'task2_model_best.pth.tar')
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+
+def visualize_bbox(cls_probs, rois_bboxes, image, class_id_to_label):
+    box_data = []
+    for class_num in range(20):
+                #get class scores .....
+                roi_bbox = rois_bboxes
+                roi_scores = cls_probs[:, class_num]
+                roi_bbox, roi_scores = filter_threshold(roi_bbox, roi_scores)
+                filtered_bbox, filtered_scores = nms(roi_bbox, roi_scores)
+                filtered_bbox = filtered_bbox.cpu().detach().numpy()
+                filtered_scores = filtered_scores.cpu().detach().numpy()
+                box_data = box_data + get_box_data([class_num] * len(filtered_scores), filtered_bbox, filtered_scores
+        ,class_id_to_label)
+    img = wandb.Image(image, boxes={
+    "predictions": {
+        "box_data": box_data,
+        "class_labels": class_id_to_label,
+    },
+    })
+    wandb.log({"bounding box": img})   
+
+#filter scores with threshold 0.05
+def filter_threshold(bbox, scores):
+    indices =  (scores >= 0.05).nonzero(as_tuple=True)[0]
+    return bbox[indices], torch.flatten(scores[indices])
+
+if __name__ == '__main__':
+    main()

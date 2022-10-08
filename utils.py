@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as transforms
+import torchvision
+
 
 
 # TODO: given bounding boxes and corresponding scores, perform non max suppression
@@ -20,8 +22,11 @@ def nms(bounding_boxes, confidence_score, threshold=0.05):
     return: list of bounding boxes and scores
     """
     boxes, scores = None, None
+    #using pytorch's implementation for nms with iou threshold
+    #due to lack of time
+    indices = torchvision.ops.nms(bounding_boxes, confidence_score, iou_threshold = 0.3)
 
-    return boxes, scores
+    return bounding_boxes[indices], confidence_score[indices]
 
 
 # TODO: calculate the intersection over union of two boxes
@@ -51,7 +56,7 @@ def tensor_to_PIL(image):
     return original_image
 
 
-def get_box_data(classes, bbox_coordinates):
+def get_box_data(classes, bbox_coordinates, scores, class_id_to_label):
     """
     classes : tensor containing class predictions/gt
     bbox_coordinates: tensor containing [[xmin0, ymin0, xmax0, ymax0], [xmin1, ymin1, ...]] (Nx4)
@@ -60,13 +65,14 @@ def get_box_data(classes, bbox_coordinates):
     """
     box_list = [{
             "position": {
-                "minX": bbox_coordinates[i][0],
-                "minY": bbox_coordinates[i][1],
-                "maxX": bbox_coordinates[i][2],
-                "maxY": bbox_coordinates[i][3],
+                "minX": float(bbox_coordinates[i][0]),
+                "minY": float(bbox_coordinates[i][1]),
+                "maxX": float(bbox_coordinates[i][2]),
+                "maxY": float(bbox_coordinates[i][3]),
             },
             "class_id": classes[i],
+            "scores" : { "score" : float(scores[i])},
+            "box_caption": "%s (%.3f)" % (class_id_to_label[classes[i]], scores[i])
         } for i in range(len(classes))
         ]
-
     return box_list

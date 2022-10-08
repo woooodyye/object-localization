@@ -40,17 +40,17 @@ class WSDDN(nn.Module):
         )
         self.roi_pool = torchvision.ops.roi_pool
         self.classifier = nn.Sequential(
-            nn.Linear(),
+            nn.Linear(in_features=9216, out_features=4096),
             nn.ReLU(inplace = True),
-            nn.Linear(),
+            nn.Linear(in_features=4096, out_features= 4096),
             nn.ReLU(inplace = True)
         )
 
-        self.score_fc = nn.Linear()
-        self.bbox_fc = nn.Linear()
+        self.score_fc = nn.Linear(in_features=4096, out_features=20)
+        self.bbox_fc = nn.Linear(in_features=4096, out_features=20)
 
         # loss
-        self.cross_entropy = nn.BCELoss()
+        self.cross_entropy = None
 
     @property
     def loss(self):
@@ -63,25 +63,33 @@ class WSDDN(nn.Module):
                 ):
 
 
-        # TODO (Q2.1): Use image and rois as input
         # compute cls_prob which are N_roi X 20 scores
+         #calculate image features
         image_features = self.features(image)
-        rois_abs = torch.abs(rois.data)
-        pooled_features = self.roi_pool(image, rois_abs) # need to write down spatial scale and output size 
+       
+        #makesure rois are abosolute values
+        rois_abs = torch.abs(rois)
 
-        score_det = self.score_fc(pooled_features)
-        bbox_det = self.bbox_fc(pooled_features)
+        #pool results and reshape #spatial resolution is 31 bc the output shape for 
+        #features is 1x256x31x31, we normalized our rois, so we need to scale up
+        pooled_features = self.roi_pool(image_features, [rois_abs], output_size=(6,6), spatial_scale= 31) # need to write down spatial scale and output size 
+        pooled_features = pooled_features.view(pooled_features.size()[0], -1)
+        #pass into classifier
+        classified_features = self.classifier(pooled_features)
 
-        score_softmax = F.softmax(score_det)
-        bbox_softmax = F.softmax(bbox_det)
+        #get score and bbox
+        score_det = self.score_fc(classified_features)
+        bbox_det = self.bbox_fc(classified_features)
+        
+        #apply softmax across differnt dimensions
+        score_softmax = F.softmax(score_det, dim = 1)
+        bbox_softmax = F.softmax(bbox_det, dim = 0)
 
-        combined_score = score_softmax * bbox_softmax
-
-        #do a sum over some dimension
-        cls_prob = torch.sum(combined_score, 0).view(-1, self.n_classes)
+        #do hadarmard
+        cls_prob = score_softmax * bbox_softmax
 
         if self.training:
-            label_vec = gt_vec.view(self.n_classes, -1)
+            label_vec = gt_vec.view(-1,self.n_classes)
             self.cross_entropy = self.build_loss(cls_prob, label_vec)
         return cls_prob
 
@@ -93,9 +101,7 @@ class WSDDN(nn.Module):
         :returns: loss
 
         """
-        # TODO (Q2.1): Compute the appropriate loss using the cls_prob
-        # that is the output of forward()
-        # Checkout forward() to see how it is called
-        loss = F.binary_cross_entropy(cls_prob, label_vec)
+        cls_sum = torch.sum(cls_prob, 0).view(-1, self.n_classes)
+        loss = nn.BCELoss(reduction = "sum")(torch.clamp(cls_sum, min=0.0, max=1.0), label_vec)
 
         return loss

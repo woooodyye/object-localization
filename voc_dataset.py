@@ -167,6 +167,7 @@ class VOCDataset(Dataset):
 
         normalized_boxes = []
 
+        #normalize bounding boxes
         for box in top_boxes:
             ymin, xmin, ymax, xmax  = box
 
@@ -174,7 +175,7 @@ class VOCDataset(Dataset):
             ymin = int(ymin) / height
             xmax = int(xmax) / width
             ymax = int(ymax) / height
-            normalized_boxes.append([xmin, ymin, xmax, ymax])
+            normalized_boxes.append(torch.FloatTensor([xmin, ymin, xmax, ymax]))
 
 
         proposals['top_scores'] = top_scores

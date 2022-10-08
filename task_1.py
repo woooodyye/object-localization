@@ -2,6 +2,7 @@ import argparse
 import os
 import shutil
 import time
+from tkinter import image_names
 
 import sklearn
 import sklearn.metrics
@@ -20,6 +21,7 @@ import torchvision.models as models
 import wandb
 import seaborn
 import matplotlib as plt
+import PIL
 
 from AlexNet import localizer_alexnet, localizer_alexnet_robust
 from voc_dataset import *
@@ -120,13 +122,9 @@ parser.add_argument('--vis', action='store_true')
 
 best_prec1 = 0
 
+#stack the needed information
+#pad zero for gt_boxes and 
 def collate_batch(batch):
-    # ret['image'] = img
-    #     ret['label'] = label
-    #     ret['wgt'] = wgt
-    #     ret['rois'] = proposals
-    #     ret['gt_boxes'] = gt_boxes
-    #     ret['gt_classes'] = gt_class_list
     maxBoxes = 0;
     for ret in batch:
         numBoxes = len(ret['gt_classes'])
@@ -141,8 +139,6 @@ def collate_batch(batch):
     return [
         torch.stack([b['image'] for b in batch]),
         torch.stack([b['label'] for b in batch]),
-        # torch.stack([b['wgt'] for b in batch]),
-        # torch.stack([b['gt_boxes'] for b in batch]),
         torch.stack([torch.tensor(b['gt_classes']) for b in batch]),
         ]
 
@@ -162,12 +158,17 @@ def main():
     model.features = torch.nn.DataParallel(model.features)
     model.cuda()
 
-    # also use an LR scheduler to decay LR by 10 every 30 epochs
+    
     criterion = nn.BCELoss() #using binary cross entropy loss function
-    optimizer = torch.optim.SGD(model.parameters(), lr = args.lr, momentum = args.momentum)
-    torch.optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1)
+
+    #use an LR scheduler to decay LR by 10 every 30 epochs
     #using stochastic gradient descent with lr = 0.01 and moementum of 0.9 
     # as indicated in the paper
+    #only optimizing layers not from alexnet after conv5
+    params = list(model.parameters())
+    optimizer = torch.optim.SGD(params[12:], lr = args.lr, momentum = args.momentum)
+    torch.optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1)
+
 
 
     # optionally resume from a checkpoint
@@ -193,6 +194,7 @@ def main():
     val_dataset = VOCDataset(split = 'test', image_size = 512)
     train_sampler = None
 
+    #splitting dataset into two loaders
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -216,9 +218,14 @@ def main():
         validate(val_loader, model, criterion)
         return
 
-    wandb.init(project="vlr-hw1.6-lr-0.1-jet")
+    class_id_to_label = dict(enumerate(train_dataset.CLASS_NAMES))
+
+    wandb.init(project="vlr-hw1.7-correct")
+
+
 
     random_indices = torch.randint(0, args.batch_size, (3,))
+
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch)
@@ -239,9 +246,9 @@ def main():
                 'optimizer': optimizer.state_dict(),
             }, is_best)
 
-    image_array = visualize_location(val_loader, model, args.epochs, random_indices)
-    wandb.log({"image and colomap at end of training ": image_array})
-
+    images, class_array = visualize_location(val_loader, model, args.epochs, random_indices)
+    wandb.log({"random images at the end of training": images})
+    print(class_array)
 
 
 # TODO: You can add input arguments if you wish
@@ -383,8 +390,10 @@ def validate(val_loader, model, criterion, epoch=0):
         # TODO (Q1.3): Visualize at appropriate interval
     if(epoch % 2 ==0):
         print('tring to plot heatmap at epoch', epoch)
-        image_array = visualize_location(val_loader, model, epoch)
-        wandb.log({"epoch": epoch, "image and colomap at end of training ": image_array})
+        images, class_array = visualize_location(val_loader, model, epoch)
+        wandb.log({"examples": images})
+        print(class_array)
+
 
 
     if(epoch % 2 == 0):
@@ -399,7 +408,10 @@ def validate(val_loader, model, criterion, epoch=0):
 def min_max(x):
     max_v = torch.max(x)
     min_v = torch.min(x)
-    return (x - min_v) / (max_v - min_v)
+    if(max_v - min_v == 0):
+        return x - min_v
+    else:
+        return (x - min_v) / (max_v - min_v)
 
 def visualize_location(val_loader, model, epoch, indices = [11,12]):
     for i, (data) in enumerate(val_loader):
@@ -412,6 +424,7 @@ def visualize_location(val_loader, model, epoch, indices = [11,12]):
         imoutput_resized = F.interpolate(imoutput, size =[512, 512], mode = 'bilinear')
 
         image_array = []
+        class_array = []
         for idx in indices:
             #get image colormap for visualization
             class_idx = gt_classes[idx][0]
@@ -422,7 +435,7 @@ def visualize_location(val_loader, model, epoch, indices = [11,12]):
 
             map_np = map_norm.cpu().detach().numpy()
 
-            colormap = seaborn.heatmap(map_np, cmap = 'jet', cbar = False, xticklabels=False, yticklabels=False)
+            colormap = seaborn.heatmap(map_np, cmap = 'jet_r', cbar = False, xticklabels=False, yticklabels=False)
 
             image = torch.squeeze(target[idx])
 
@@ -430,8 +443,9 @@ def visualize_location(val_loader, model, epoch, indices = [11,12]):
             cmap = wandb.Image(colormap)
             image_array.append(img)
             image_array.append(cmap)
+            class_array.append(class_idx)
         break;
-    return image_array
+    return image_array, class_array
 
 # TODO: You can make changes to this function if you wish (not necessary)
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
